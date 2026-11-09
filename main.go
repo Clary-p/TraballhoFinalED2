@@ -258,35 +258,113 @@ func removerExpirados(turno int) {
 }
 
 func jogarTurno(turno int, ambulancias []Ambulancia) {
-	for _, a := range ambulancias {
-		mov := "P"
-		if a.Livre {
-			melhor := -1
-			for i := 0; i < pool.proxIndice; i++ {
-				c := &pool.chamados[i]
-				if !c.Ativo {
-					continue
-				}
-				if melhor == -1 || distancia(a.X, a.Y, c.X, c.Y) < distancia(a.X, a.Y, pool.chamados[melhor].X, pool.chamados[melhor].Y) {
-					melhor = i
-				}
-			}
-			if melhor != -1 {
-				mov = direcao(a.X, a.Y, pool.chamados[melhor].X, pool.chamados[melhor].Y)
-			}
-		} else {
-			melhor := 0
-			for i, h := range hospitais {
-				if distancia(a.X, a.Y, h.X, h.Y) < distancia(a.X, a.Y, hospitais[melhor].X, hospitais[melhor].Y) {
-					melhor = i
-				}
-			}
-			mov = direcao(a.X, a.Y, hospitais[melhor].X, hospitais[melhor].Y)
-		}
-		fmt.Fprintln(escritor, a.ID, mov)
-	}
-	fmt.Fprintln(escritor, "FIM")
-	escritor.Flush()
+    type Par struct {
+        ambIndice     int
+        chamadoIndice int
+        prioridade    float64
+        distancia     int
+    }
+
+    // Controla usando slices, sem o mapa q o professo proibiu
+    movimentos := make([]string, len(ambulancias))
+    usadosAmbulancias := make([]bool, len(ambulancias))
+    usadosChamados := make([]bool, pool.proxIndice)
+
+    pares := make([]Par, 0)
+
+    // Gera as combinações entre ambulâncias livres e chamados ativos.
+    for ai, a := range ambulancias {
+        if !a.Livre {
+            continue
+        }
+
+        for ci := 0; ci < pool.proxIndice; ci++ {
+            c := &pool.chamados[ci]
+
+            if !c.Ativo || c.Prazo < turno {
+                continue
+            }
+
+            dist := distancia(a.X, a.Y, c.X, c.Y)
+
+            prioridade := float64(c.Valor) / float64(dist+1)
+
+            pares = append(pares, Par{
+                ambIndice:     ai,
+                chamadoIndice: ci,
+                prioridade:    prioridade,
+                distancia:     dist,
+            })
+        }
+    }
+
+    // Ordena pela maior prioridade.
+    // Em caso de empate, prefere o chamado mais próximo.
+    sort.Slice(pares, func(i, j int) bool {
+        if pares[i].prioridade == pares[j].prioridade {
+            return pares[i].distancia < pares[j].distancia
+        }
+
+        return pares[i].prioridade > pares[j].prioridade
+    })
+	//questão que estava faltando, a saber quais ambulâncias estão ocupadas e tals.
+    // Distribui os chamados sem repetir ambulâncias ou chamados.
+    for _, p := range pares {
+        if usadosAmbulancias[p.ambIndice] ||
+            usadosChamados[p.chamadoIndice] {
+            continue
+        }
+
+        a := ambulancias[p.ambIndice]
+        c := pool.chamados[p.chamadoIndice]
+
+        movimentos[p.ambIndice] = direcao(
+            a.X, a.Y,
+            c.X, c.Y,
+        )
+
+        usadosAmbulancias[p.ambIndice] = true
+        usadosChamados[p.chamadoIndice] = true
+    }
+
+    // Ambulâncias ocupadas vão para o hospital mais próximo.
+    for ai, a := range ambulancias {
+        if !a.Livre {
+            if len(hospitais) == 0 {
+                movimentos[ai] = "P"
+                continue
+            }
+
+            melhor := 0
+
+            for i, h := range hospitais {
+                if distancia(a.X, a.Y, h.X, h.Y) <
+                    distancia(a.X, a.Y, hospitais[melhor].X, hospitais[melhor].Y) {
+                    melhor = i
+                }
+            }
+
+            h := hospitais[melhor]
+
+            movimentos[ai] = direcao(
+                a.X, a.Y,
+                h.X, h.Y,
+            )
+        }
+
+        // Se não encontrou chamado para uma ambulância livre, ela espera.
+        if movimentos[ai] == "" {
+            movimentos[ai] = "P"
+        }
+    }
+
+    // Envia os movimentos na ordem original das ambulâncias.
+    for ai, a := range ambulancias {
+        fmt.Fprintln(escritor, a.ID, movimentos[ai])
+    }
+
+    fmt.Fprintln(escritor, "FIM")
+    escritor.Flush()
 }
 
 func main() {
