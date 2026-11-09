@@ -29,6 +29,9 @@ type Chamado struct {
 	Valor int
 	Prazo int
 	Ativo bool
+	
+    HashProx int
+    HashAnt  int
 }
 
 type Ambulancia struct {
@@ -52,6 +55,79 @@ type PoolChamados struct {
 	proxIndice int // primeiro índice nunca usado
 	livres     []int
 }
+//ids com tabela hash, +fácil de localizar
+type TabelaIDs struct {
+    baldes []int
+}
+
+func NovaTabelaIDs(capacidade int) *TabelaIDs {
+    t := &TabelaIDs{
+        baldes: make([]int, capacidade*2+1),
+    }
+
+    for i := range t.baldes {
+        t.baldes[i] = -1
+    }
+
+    return t
+}
+//função hash
+func (t *TabelaIDs) hash(id int) int {
+    return int(uint(id) % uint(len(t.baldes)))
+}
+//inserção
+func (t *TabelaIDs) Inserir(p *PoolChamados, indice int) {
+    c := &p.chamados[indice]
+
+    balde := t.hash(c.ID)
+
+    c.HashAnt = -1
+    c.HashProx = t.baldes[balde]
+
+    if c.HashProx != -1 {
+        p.chamados[c.HashProx].HashAnt = indice
+    }
+
+    t.baldes[balde] = indice
+}
+
+//busca por ID 
+func (t *TabelaIDs) Buscar(p *PoolChamados, id int) (int, bool) {
+    balde := t.hash(id)
+
+    atual := t.baldes[balde]
+
+    for atual != -1 {
+        c := &p.chamados[atual]
+
+        if c.Ativo && c.ID == id {
+            return atual, true
+        }
+
+        atual = c.HashProx
+    }
+
+    return -1, false
+}
+//remoção
+func (t *TabelaIDs) RemoverIndice(p *PoolChamados, indice int) {
+    c := &p.chamados[indice]
+
+    balde := t.hash(c.ID)
+
+    if c.HashAnt == -1 {
+        t.baldes[balde] = c.HashProx
+    } else {
+        p.chamados[c.HashAnt].HashProx = c.HashProx
+    }
+
+    if c.HashProx != -1 {
+        p.chamados[c.HashProx].HashAnt = c.HashAnt
+    }
+
+    c.HashAnt = -1
+    c.HashProx = -1
+}
 
 func NovoPool(capacidade int) *PoolChamados {
 	return &PoolChamados{
@@ -74,18 +150,24 @@ func (p *PoolChamados) Alloc() (int, bool) {
 	p.proxIndice++
 	return indice, true
 }
-
+//modificado
 func (p *PoolChamados) Free(indice int) {
-	p.chamados[indice].Ativo = false
-	p.livres = append(p.livres, indice)
+    if !p.chamados[indice].Ativo {
+        return
+    }
+
+    p.chamados[indice] = Chamado{}
+    p.livres = append(p.livres, indice)
 }
 
 var (
-	leitor   *bufio.Scanner
-	escritor *bufio.Writer
+    leitor    *bufio.Scanner
+    escritor  *bufio.Writer
 
-	hospitais []Hospital
-	pool      *PoolChamados
+    hospitais []Hospital
+    pool      *PoolChamados
+	tabelaIDs = NovaTabelaIDs(maxChamados)
+    tabelaIDs *TabelaIDs
 )
 
 // lerCampos lê a próxima linha da entrada e a divide em campos.
@@ -152,25 +234,28 @@ func lerInicio() {
 	lerCampos() // FIM
 }
 
-// removerPorID procura o chamado no slice e o remove
+// MODIFICADO p/ hash
+//removerPorID procura o chamado no slice e o remove
 func removerPorID(id int) {
-	for i := 0; i < pool.proxIndice; i++ {
-		c := &pool.chamados[i]
-		if c.Ativo && c.ID == id {
-			pool.Free(i)
-			return
-		}
-	}
-}
+	indice, encontrado := tabelaIDs.Buscar(pool, id)
 
+    if !encontrado {
+        return
+    }
+
+    tabelaIDs.RemoverIndice(pool, indice)
+    pool.Free(indice)
+}
+//MODIFICADO
 // removerExpirados mantém só os chamados com prazo maior ou igual ao turno.
 func removerExpirados(turno int) {
-	for i := 0; i < pool.proxIndice; i++ {
-		c := &pool.chamados[i]
-		if c.Ativo && c.Prazo < turno {
-			pool.Free(i)
-		}
-	}
+	 for i := 0; i < pool.proxIndice; i++ {
+        c := &pool.chamados[i]
+        if c.Ativo && c.Prazo < turno {
+            tabelaIDs.RemoverIndice(pool, i)
+            pool.Free(i)
+        }
+    }
 }
 
 func jogarTurno(turno int, ambulancias []Ambulancia) {
@@ -212,6 +297,7 @@ func main() {
 
 	lerInicio()
 	pool = NovoPool(maxChamados)
+	tabelaIDs = NovaTabelaIDs(maxChamados)
 	fmt.Fprintln(escritor, "PRONTO")
 	escritor.Flush()
 
@@ -230,7 +316,18 @@ func main() {
 			if !ok {
 				continue // pool cheio
 			}
-			pool.chamados[indice] = Chamado{inteiro(c[0]), inteiro(c[1]), inteiro(c[2]), inteiro(c[3]), inteiro(c[4]), true}
+			pool.chamados[indice] = Chamado{
+    ID:       inteiro(c[0]),
+    X:        inteiro(c[1]),
+    Y:        inteiro(c[2]),
+    Valor:    inteiro(c[3]),
+    Prazo:    inteiro(c[4]),
+    Ativo:    true,
+    HashProx: -1,
+    HashAnt:  -1,
+}
+
+tabelaIDs.Inserir(pool, indice)
 		}
 
 		r := inteiro(lerCampos()[1]) // RECOLHIDOS r
