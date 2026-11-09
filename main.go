@@ -21,11 +21,14 @@ import (
 	"strings"
 )
 
+const maxChamados = 1000000
+
 type Chamado struct {
 	ID    int
 	X, Y  int
 	Valor int
 	Prazo int
+	Ativo bool
 }
 
 type Ambulancia struct {
@@ -38,12 +41,51 @@ type Hospital struct {
 	X, Y int
 }
 
+// --- ARMAZENAMENTO DE CHAMADOS ---
+
+// Chamados são armazenados em um array fixo (pool), referidos por índice.
+// Índices de chamados removidos vão para uma pilha e são reaproveitados.
+type PoolChamados struct {
+	chamados []Chamado
+
+	capacidade int
+	proxIndice int // primeiro índice nunca usado
+	livres     []int
+}
+
+func NovoPool(capacidade int) *PoolChamados {
+	return &PoolChamados{
+		chamados:   make([]Chamado, capacidade),
+		capacidade: capacidade,
+		livres:     make([]int, 0, capacidade),
+	}
+}
+
+func (p *PoolChamados) Alloc() (int, bool) {
+	if len(p.livres) > 0 {
+		indice := p.livres[len(p.livres)-1]
+		p.livres = p.livres[:len(p.livres)-1]
+		return indice, true
+	}
+	if p.proxIndice >= p.capacidade {
+		return 0, false
+	}
+	indice := p.proxIndice
+	p.proxIndice++
+	return indice, true
+}
+
+func (p *PoolChamados) Free(indice int) {
+	p.chamados[indice].Ativo = false
+	p.livres = append(p.livres, indice)
+}
+
 var (
 	leitor   *bufio.Scanner
 	escritor *bufio.Writer
 
 	hospitais []Hospital
-	chamados  []Chamado
+	pool      *PoolChamados
 )
 
 // lerCampos lê a próxima linha da entrada e a divide em campos.
@@ -110,13 +152,12 @@ func lerInicio() {
 	lerCampos() // FIM
 }
 
-// removerPorID procura o chamado no slice e o remove, trocando-o pelo
-// último elemento. Custo: proporcional ao número de chamados abertos.
+// removerPorID procura o chamado no slice e o remove
 func removerPorID(id int) {
-	for i := range chamados {
-		if chamados[i].ID == id {
-			chamados[i] = chamados[len(chamados)-1]
-			chamados = chamados[:len(chamados)-1]
+	for i := 0; i < pool.proxIndice; i++ {
+		c := &pool.chamados[i]
+		if c.Ativo && c.ID == id {
+			pool.Free(i)
 			return
 		}
 	}
@@ -124,13 +165,12 @@ func removerPorID(id int) {
 
 // removerExpirados mantém só os chamados com prazo maior ou igual ao turno.
 func removerExpirados(turno int) {
-	vivos := chamados[:0]
-	for _, c := range chamados {
-		if c.Prazo >= turno {
-			vivos = append(vivos, c)
+	for i := 0; i < pool.proxIndice; i++ {
+		c := &pool.chamados[i]
+		if c.Ativo && c.Prazo < turno {
+			pool.Free(i)
 		}
 	}
-	chamados = vivos
 }
 
 func jogarTurno(turno int, ambulancias []Ambulancia) {
@@ -138,13 +178,17 @@ func jogarTurno(turno int, ambulancias []Ambulancia) {
 		mov := "P"
 		if a.Livre {
 			melhor := -1
-			for i, c := range chamados {
-				if melhor == -1 || distancia(a.X, a.Y, c.X, c.Y) < distancia(a.X, a.Y, chamados[melhor].X, chamados[melhor].Y) {
+			for i := 0; i < pool.proxIndice; i++ {
+				c := &pool.chamados[i]
+				if !c.Ativo {
+					continue
+				}
+				if melhor == -1 || distancia(a.X, a.Y, c.X, c.Y) < distancia(a.X, a.Y, pool.chamados[melhor].X, pool.chamados[melhor].Y) {
 					melhor = i
 				}
 			}
 			if melhor != -1 {
-				mov = direcao(a.X, a.Y, chamados[melhor].X, chamados[melhor].Y)
+				mov = direcao(a.X, a.Y, pool.chamados[melhor].X, pool.chamados[melhor].Y)
 			}
 		} else {
 			melhor := 0
@@ -167,6 +211,7 @@ func main() {
 	escritor = bufio.NewWriter(os.Stdout)
 
 	lerInicio()
+	pool = NovoPool(maxChamados)
 	fmt.Fprintln(escritor, "PRONTO")
 	escritor.Flush()
 
@@ -180,7 +225,12 @@ func main() {
 		n := inteiro(lerCampos()[1]) // CHAMADOS n
 		for i := 0; i < n; i++ {
 			c := lerCampos()
-			chamados = append(chamados, Chamado{inteiro(c[0]), inteiro(c[1]), inteiro(c[2]), inteiro(c[3]), inteiro(c[4])})
+
+			indice, ok := pool.Alloc()
+			if !ok {
+				continue // pool cheio
+			}
+			pool.chamados[indice] = Chamado{inteiro(c[0]), inteiro(c[1]), inteiro(c[2]), inteiro(c[3]), inteiro(c[4]), true}
 		}
 
 		r := inteiro(lerCampos()[1]) // RECOLHIDOS r
