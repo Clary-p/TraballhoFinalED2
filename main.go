@@ -166,7 +166,6 @@ var (
 
     hospitais []Hospital
     pool      *PoolChamados
-	tabelaIDs = NovaTabelaIDs(maxChamados)
     tabelaIDs *TabelaIDs
 )
 
