@@ -12,29 +12,29 @@ import (
 const maxChamados = 1000000
 
 type Chamado struct {
-	ID    int
-	X, Y  int
-	Valor int
-	Prazo int
+	ID    int64
+	X, Y  int16
+	Valor int16
+	Prazo int16
 	Ativo bool
 
-	HashProx int
-	HashAnt  int
+	HashProx int32
+	HashAnt  int32
 
-	Cel       int
-	GradeProx int
-	GradeAnt  int
+	Cel       int32
+	GradeProx int32
+	GradeAnt  int32
 	Reservado int
 }
 
 type Ambulancia struct {
-	ID    int
-	X, Y  int
+	ID    int64
+	X, Y  int16
 	Livre bool
 }
 
 type Hospital struct {
-	X, Y int
+	X, Y int16
 }
 
 // --- ARMAZENAMENTO DE CHAMADOS ---
@@ -46,20 +46,20 @@ type PoolChamados struct {
 
 	capacidade int
 	proxIndice int // primeiro índice nunca usado
-	livres     []int
+	livres     []int32
 }
 
 func NovoPool(capacidade int) *PoolChamados {
 	return &PoolChamados{
 		chamados:   make([]Chamado, capacidade),
 		capacidade: capacidade,
-		livres:     make([]int, 0, capacidade),
+		livres:     make([]int32, 0, capacidade),
 	}
 }
 
 func (p *PoolChamados) Alloc() (int, bool) {
 	if len(p.livres) > 0 {
-		indice := p.livres[len(p.livres)-1]
+		indice := int(p.livres[len(p.livres)-1])
 		p.livres = p.livres[:len(p.livres)-1]
 		return indice, true
 	}
@@ -77,7 +77,7 @@ func (p *PoolChamados) Free(indice int) {
 	}
 
 	p.chamados[indice] = Chamado{}
-	p.livres = append(p.livres, indice)
+	p.livres = append(p.livres, int32(indice))
 }
 
 // --- GRADE ESPACIAL ---
@@ -87,7 +87,7 @@ const valorMax = 100
 
 type GradeEspacial struct {
 	cols, linhas int
-	cabecas      []int // primeiro chamado de cada célula, -1 se vazia
+	cabecas      []int32 // primeiro chamado de cada célula, -1 se vazia
 }
 
 func NovaGrade(largura, altura int) *GradeEspacial {
@@ -96,7 +96,7 @@ func NovaGrade(largura, altura int) *GradeEspacial {
 		linhas: (altura + tamCelula - 1) / tamCelula,
 	}
 
-	g.cabecas = make([]int, g.cols*g.linhas)
+	g.cabecas = make([]int32, g.cols*g.linhas)
 	for i := range g.cabecas {
 		g.cabecas[i] = -1
 	}
@@ -110,17 +110,17 @@ func (g *GradeEspacial) indiceCelula(x, y int) int {
 
 func (g *GradeEspacial) Inserir(p *PoolChamados, indice int) {
 	c := &p.chamados[indice]
-	cel := g.indiceCelula(c.X, c.Y)
+	cel := g.indiceCelula(int(c.X), int(c.Y))
 
-	c.Cel = cel
+	c.Cel = int32(cel)
 	c.GradeAnt = -1
 	c.GradeProx = g.cabecas[cel]
 
 	if c.GradeProx != -1 {
-		p.chamados[c.GradeProx].GradeAnt = indice
+		p.chamados[c.GradeProx].GradeAnt = int32(indice)
 	}
 
-	g.cabecas[cel] = indice
+	g.cabecas[cel] = int32(indice)
 }
 
 // chamar antes do Free, que zera o chamado
@@ -161,7 +161,7 @@ func (g *GradeEspacial) Proximos(p *PoolChamados, x, y, k int, out []int) []int 
 					continue
 				}
 				for i := g.cabecas[cy*g.cols+cx]; i != -1; i = p.chamados[i].GradeProx {
-					out = append(out, i)
+					out = append(out, int(i))
 				}
 			}
 		}
@@ -176,12 +176,12 @@ func (g *GradeEspacial) Proximos(p *PoolChamados, x, y, k int, out []int) []int 
 
 // ids com tabela hash, +fácil de localizar
 type TabelaIDs struct {
-	baldes []int
+	baldes []int32
 }
 
 func NovaTabelaIDs(capacidade int) *TabelaIDs {
 	t := &TabelaIDs{
-		baldes: make([]int, capacidade*2+1),
+		baldes: make([]int32, capacidade*2+1),
 	}
 
 	for i := range t.baldes {
@@ -192,7 +192,7 @@ func NovaTabelaIDs(capacidade int) *TabelaIDs {
 }
 
 // função hash
-func (t *TabelaIDs) hash(id int) int {
+func (t *TabelaIDs) hash(id int64) int {
 	return int(uint(id) % uint(len(t.baldes)))
 }
 
@@ -206,14 +206,14 @@ func (t *TabelaIDs) Inserir(p *PoolChamados, indice int) {
 	c.HashProx = t.baldes[balde]
 
 	if c.HashProx != -1 {
-		p.chamados[c.HashProx].HashAnt = indice
+		p.chamados[c.HashProx].HashAnt = int32(indice)
 	}
 
-	t.baldes[balde] = indice
+	t.baldes[balde] = int32(indice)
 }
 
 // busca por ID
-func (t *TabelaIDs) Buscar(p *PoolChamados, id int) (int, bool) {
+func (t *TabelaIDs) Buscar(p *PoolChamados, id int64) (int, bool) {
 	balde := t.hash(id)
 
 	atual := t.baldes[balde]
@@ -222,7 +222,7 @@ func (t *TabelaIDs) Buscar(p *PoolChamados, id int) (int, bool) {
 		c := &p.chamados[atual]
 
 		if c.Ativo && c.ID == id {
-			return atual, true
+			return int(atual), true
 		}
 
 		atual = c.HashProx
@@ -316,7 +316,7 @@ func lerInicio() {
 	h := inteiro(lerCampos()[1])
 	for i := 0; i < h; i++ {
 		c := lerCampos()
-		hospitais = append(hospitais, Hospital{inteiro(c[0]), inteiro(c[1])})
+		hospitais = append(hospitais, Hospital{int16(inteiro(c[0])), int16(inteiro(c[1]))})
 	}
 	k := inteiro(lerCampos()[1])
 	for i := 0; i < k; i++ {
@@ -330,7 +330,7 @@ func lerInicio() {
 }
 
 // removerPorID procura o chamado no slice e o remove
-func removerPorID(id int) {
+func removerPorID(id int64) {
 	indice, encontrado := tabelaIDs.Buscar(pool, id)
 
 	if !encontrado {
@@ -346,7 +346,7 @@ func removerPorID(id int) {
 func removerExpirados(turno int) {
 	for i := 0; i < pool.proxIndice; i++ {
 		c := &pool.chamados[i]
-		if c.Ativo && c.Prazo < turno {
+		if c.Ativo && int(c.Prazo) < turno {
 			tabelaIDs.RemoverIndice(pool, i)
 			grade.Remover(pool, i)
 			pool.Free(i)
@@ -376,13 +376,13 @@ func jogarTurno(turno int, ambulancias []Ambulancia) {
 			continue
 		}
 
-		candidatos = grade.Proximos(pool, a.X, a.Y, 8, candidatos[:0])
+		candidatos = grade.Proximos(pool, int(a.X), int(a.Y), 8, candidatos[:0])
 
 		for _, ci := range candidatos {
 			c := &pool.chamados[ci]
 
-			dist := distancia(a.X, a.Y, c.X, c.Y)
-			if !c.Ativo || c.Prazo < turno+dist {
+			dist := distancia(int(a.X), int(a.Y), int(c.X), int(c.Y))
+			if !c.Ativo || int(c.Prazo) < turno+dist {
 				continue
 			}
 
@@ -418,8 +418,8 @@ func jogarTurno(turno int, ambulancias []Ambulancia) {
 		c := pool.chamados[p.chamadoIndice]
 
 		movimentos[p.ambIndice] = direcao(
-			a.X, a.Y,
-			c.X, c.Y,
+			int(a.X), int(a.Y),
+			int(c.X), int(c.Y),
 		)
 
 		usadosAmbulancias[p.ambIndice] = true
@@ -437,8 +437,8 @@ func jogarTurno(turno int, ambulancias []Ambulancia) {
 			melhor := 0
 
 			for i, h := range hospitais {
-				if distancia(a.X, a.Y, h.X, h.Y) <
-					distancia(a.X, a.Y, hospitais[melhor].X, hospitais[melhor].Y) {
+				if distancia(int(a.X), int(a.Y), int(h.X), int(h.Y)) <
+					distancia(int(a.X), int(a.Y), int(hospitais[melhor].X), int(hospitais[melhor].Y)) {
 					melhor = i
 				}
 			}
@@ -446,8 +446,8 @@ func jogarTurno(turno int, ambulancias []Ambulancia) {
 			h := hospitais[melhor]
 
 			movimentos[ai] = direcao(
-				a.X, a.Y,
-				h.X, h.Y,
+				int(a.X), int(a.Y),
+				int(h.X), int(h.Y),
 			)
 		}
 
@@ -494,11 +494,11 @@ func main() {
 				continue // pool cheio
 			}
 			pool.chamados[indice] = Chamado{
-				ID:       inteiro(c[0]),
-				X:        inteiro(c[1]),
-				Y:        inteiro(c[2]),
-				Valor:    inteiro(c[3]),
-				Prazo:    inteiro(c[4]),
+				ID:       int64(inteiro(c[0])),
+				X:        int16(inteiro(c[1])),
+				Y:        int16(inteiro(c[2])),
+				Valor:    int16(inteiro(c[3])),
+				Prazo:    int16(inteiro(c[4])),
 				Ativo:    true,
 				HashProx: -1,
 				HashAnt:  -1,
@@ -510,7 +510,7 @@ func main() {
 
 		r := inteiro(lerCampos()[1]) // RECOLHIDOS r
 		for i := 0; i < r; i++ {
-			removerPorID(inteiro(lerCampos()[0]))
+			removerPorID(int64(inteiro(lerCampos()[0])))
 		}
 		removerExpirados(turno)
 
@@ -518,7 +518,7 @@ func main() {
 		ambulancias := make([]Ambulancia, k)
 		for i := 0; i < k; i++ {
 			c := lerCampos()
-			ambulancias[i] = Ambulancia{inteiro(c[0]), inteiro(c[1]), inteiro(c[2]), c[3] == "LIVRE"}
+			ambulancias[i] = Ambulancia{int64(inteiro(c[0])), int16(inteiro(c[1])), int16(inteiro(c[2])), c[3] == "LIVRE"}
 		}
 
 		e := inteiro(lerCampos()[1]) // PLACAR e
