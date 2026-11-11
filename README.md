@@ -1,3 +1,5 @@
 # TraballhoFinalED2
-Clarissa Pietrangelo e Sabrina Dorigoni Pelentir
-GRR:20255551 e 2025
+
+Clarissa Pietrangelo - GRR20255551
+
+Sabrina Dorigoni Pelentir - GRR20255562
