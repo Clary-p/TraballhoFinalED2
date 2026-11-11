@@ -1,22 +1,10 @@
-// Bot ingênuo: ponto de partida do trabalho prático.
-//
-// Este bot implementa o protocolo inteiro e joga de forma simples:
-//
-//   - guarda os chamados abertos num slice;
-//   - a cada turno, cada ambulância livre procura, por varredura linear,
-//     o chamado mais próximo e anda na direção dele;
-//   - cada ambulância ocupada anda na direção do hospital mais próximo.
-//
-// Ele não verifica se o chamado ainda pode ser alcançado dentro do prazo,
-// não impede que duas ambulâncias sigam para o mesmo chamado e ignora os
-// bloqueios da etapa 2. No cenário de estresse, a varredura linear estoura
-// o limite de tempo por turno.
 package main
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -29,9 +17,14 @@ type Chamado struct {
 	Valor int
 	Prazo int
 	Ativo bool
-	
-    HashProx int
-    HashAnt  int
+
+	HashProx int
+	HashAnt  int
+
+	Cel       int
+	GradeProx int
+	GradeAnt  int
+	Reservado int
 }
 
 type Ambulancia struct {
@@ -55,79 +48,6 @@ type PoolChamados struct {
 	proxIndice int // primeiro índice nunca usado
 	livres     []int
 }
-//ids com tabela hash, +fácil de localizar
-type TabelaIDs struct {
-    baldes []int
-}
-
-func NovaTabelaIDs(capacidade int) *TabelaIDs {
-    t := &TabelaIDs{
-        baldes: make([]int, capacidade*2+1),
-    }
-
-    for i := range t.baldes {
-        t.baldes[i] = -1
-    }
-
-    return t
-}
-//função hash
-func (t *TabelaIDs) hash(id int) int {
-    return int(uint(id) % uint(len(t.baldes)))
-}
-//inserção
-func (t *TabelaIDs) Inserir(p *PoolChamados, indice int) {
-    c := &p.chamados[indice]
-
-    balde := t.hash(c.ID)
-
-    c.HashAnt = -1
-    c.HashProx = t.baldes[balde]
-
-    if c.HashProx != -1 {
-        p.chamados[c.HashProx].HashAnt = indice
-    }
-
-    t.baldes[balde] = indice
-}
-
-//busca por ID 
-func (t *TabelaIDs) Buscar(p *PoolChamados, id int) (int, bool) {
-    balde := t.hash(id)
-
-    atual := t.baldes[balde]
-
-    for atual != -1 {
-        c := &p.chamados[atual]
-
-        if c.Ativo && c.ID == id {
-            return atual, true
-        }
-
-        atual = c.HashProx
-    }
-
-    return -1, false
-}
-//remoção
-func (t *TabelaIDs) RemoverIndice(p *PoolChamados, indice int) {
-    c := &p.chamados[indice]
-
-    balde := t.hash(c.ID)
-
-    if c.HashAnt == -1 {
-        t.baldes[balde] = c.HashProx
-    } else {
-        p.chamados[c.HashAnt].HashProx = c.HashProx
-    }
-
-    if c.HashProx != -1 {
-        p.chamados[c.HashProx].HashAnt = c.HashAnt
-    }
-
-    c.HashAnt = -1
-    c.HashProx = -1
-}
 
 func NovoPool(capacidade int) *PoolChamados {
 	return &PoolChamados{
@@ -150,23 +70,195 @@ func (p *PoolChamados) Alloc() (int, bool) {
 	p.proxIndice++
 	return indice, true
 }
-//modificado
-func (p *PoolChamados) Free(indice int) {
-    if !p.chamados[indice].Ativo {
-        return
-    }
 
-    p.chamados[indice] = Chamado{}
-    p.livres = append(p.livres, indice)
+func (p *PoolChamados) Free(indice int) {
+	if !p.chamados[indice].Ativo {
+		return
+	}
+
+	p.chamados[indice] = Chamado{}
+	p.livres = append(p.livres, indice)
+}
+
+// --- GRADE ESPACIAL ---
+
+const tamCelula = 16 // lado de cada célula da grade, em células do mapa
+const valorMax = 100
+
+type GradeEspacial struct {
+	cols, linhas int
+	cabecas      []int // primeiro chamado de cada célula, -1 se vazia
+}
+
+func NovaGrade(largura, altura int) *GradeEspacial {
+	g := &GradeEspacial{
+		cols:   (largura + tamCelula - 1) / tamCelula,
+		linhas: (altura + tamCelula - 1) / tamCelula,
+	}
+
+	g.cabecas = make([]int, g.cols*g.linhas)
+	for i := range g.cabecas {
+		g.cabecas[i] = -1
+	}
+
+	return g
+}
+
+func (g *GradeEspacial) indiceCelula(x, y int) int {
+	return (y/tamCelula)*g.cols + x/tamCelula
+}
+
+func (g *GradeEspacial) Inserir(p *PoolChamados, indice int) {
+	c := &p.chamados[indice]
+	cel := g.indiceCelula(c.X, c.Y)
+
+	c.Cel = cel
+	c.GradeAnt = -1
+	c.GradeProx = g.cabecas[cel]
+
+	if c.GradeProx != -1 {
+		p.chamados[c.GradeProx].GradeAnt = indice
+	}
+
+	g.cabecas[cel] = indice
+}
+
+// chamar antes do Free, que zera o chamado
+func (g *GradeEspacial) Remover(p *PoolChamados, indice int) {
+	c := &p.chamados[indice]
+
+	if c.GradeAnt == -1 {
+		g.cabecas[c.Cel] = c.GradeProx
+	} else {
+		p.chamados[c.GradeAnt].GradeProx = c.GradeProx
+	}
+
+	if c.GradeProx != -1 {
+		p.chamados[c.GradeProx].GradeAnt = c.GradeAnt
+	}
+
+	c.GradeAnt = -1
+	c.GradeProx = -1
+}
+
+// acrescenta a out os índices de chamados perto de (x, y), percorrendo celulas em anéis,
+// até ter pelo menos k chamados (ou percorrer todas células).
+func (g *GradeEspacial) Proximos(p *PoolChamados, x, y, k int, out []int) []int {
+	cx0, cy0 := x/tamCelula, y/tamCelula
+	maxR := max(g.cols, g.linhas)
+
+	for r := 0; r <= maxR; r++ {
+		for cy := cy0 - r; cy <= cy0+r; cy++ {
+			if cy < 0 || cy >= g.linhas {
+				continue
+			}
+			passo := 1
+			if cy != cy0-r && cy != cy0+r {
+				passo = 2 * r // r > 0 aqui, pois no anel 0 só existe uma linha
+			}
+			for cx := cx0 - r; cx <= cx0+r; cx += passo {
+				if cx < 0 || cx >= g.cols {
+					continue
+				}
+				for i := g.cabecas[cy*g.cols+cx]; i != -1; i = p.chamados[i].GradeProx {
+					out = append(out, i)
+				}
+			}
+		}
+		if len(out) >= k {
+			break
+		}
+	}
+	return out
+}
+
+// -- Tabela Hash de IDs ---
+
+// ids com tabela hash, +fácil de localizar
+type TabelaIDs struct {
+	baldes []int
+}
+
+func NovaTabelaIDs(capacidade int) *TabelaIDs {
+	t := &TabelaIDs{
+		baldes: make([]int, capacidade*2+1),
+	}
+
+	for i := range t.baldes {
+		t.baldes[i] = -1
+	}
+
+	return t
+}
+
+// função hash
+func (t *TabelaIDs) hash(id int) int {
+	return int(uint(id) % uint(len(t.baldes)))
+}
+
+// inserção
+func (t *TabelaIDs) Inserir(p *PoolChamados, indice int) {
+	c := &p.chamados[indice]
+
+	balde := t.hash(c.ID)
+
+	c.HashAnt = -1
+	c.HashProx = t.baldes[balde]
+
+	if c.HashProx != -1 {
+		p.chamados[c.HashProx].HashAnt = indice
+	}
+
+	t.baldes[balde] = indice
+}
+
+// busca por ID
+func (t *TabelaIDs) Buscar(p *PoolChamados, id int) (int, bool) {
+	balde := t.hash(id)
+
+	atual := t.baldes[balde]
+
+	for atual != -1 {
+		c := &p.chamados[atual]
+
+		if c.Ativo && c.ID == id {
+			return atual, true
+		}
+
+		atual = c.HashProx
+	}
+
+	return -1, false
+}
+
+// remoção
+func (t *TabelaIDs) RemoverIndice(p *PoolChamados, indice int) {
+	c := &p.chamados[indice]
+
+	balde := t.hash(c.ID)
+
+	if c.HashAnt == -1 {
+		t.baldes[balde] = c.HashProx
+	} else {
+		p.chamados[c.HashAnt].HashProx = c.HashProx
+	}
+
+	if c.HashProx != -1 {
+		p.chamados[c.HashProx].HashAnt = c.HashAnt
+	}
+
+	c.HashAnt = -1
+	c.HashProx = -1
 }
 
 var (
-    leitor    *bufio.Scanner
-    escritor  *bufio.Writer
+	leitor   *bufio.Scanner
+	escritor *bufio.Writer
 
-    hospitais []Hospital
-    pool      *PoolChamados
-    tabelaIDs *TabelaIDs
+	hospitais []Hospital
+	pool      *PoolChamados
+	grade     *GradeEspacial
+	tabelaIDs *TabelaIDs
 )
 
 // lerCampos lê a próxima linha da entrada e a divide em campos.
@@ -213,10 +305,14 @@ func direcao(x, y, alvoX, alvoY int) string {
 	return "P"
 }
 
+var largura, altura int
+
 // lerInicio lê a mensagem de início. Este bot só usa os hospitais; os
 // bloqueios são lidos e descartados.
 func lerInicio() {
-	lerCampos() // INICIO largura altura turnos limite_turno limite_preparo equipe num_equipes
+	c := lerCampos() // INICIO largura altura turnos limite_turno limite_preparo equipe num_equipes
+	largura = inteiro(c[1])
+	altura = inteiro(c[2])
 	h := inteiro(lerCampos()[1])
 	for i := 0; i < h; i++ {
 		c := lerCampos()
@@ -233,138 +329,141 @@ func lerInicio() {
 	lerCampos() // FIM
 }
 
-// MODIFICADO p/ hash
-//removerPorID procura o chamado no slice e o remove
+// removerPorID procura o chamado no slice e o remove
 func removerPorID(id int) {
 	indice, encontrado := tabelaIDs.Buscar(pool, id)
 
-    if !encontrado {
-        return
-    }
+	if !encontrado {
+		return
+	}
 
-    tabelaIDs.RemoverIndice(pool, indice)
-    pool.Free(indice)
+	tabelaIDs.RemoverIndice(pool, indice)
+	grade.Remover(pool, indice)
+	pool.Free(indice)
 }
-//MODIFICADO
+
 // removerExpirados mantém só os chamados com prazo maior ou igual ao turno.
 func removerExpirados(turno int) {
-	 for i := 0; i < pool.proxIndice; i++ {
-        c := &pool.chamados[i]
-        if c.Ativo && c.Prazo < turno {
-            tabelaIDs.RemoverIndice(pool, i)
-            pool.Free(i)
-        }
-    }
+	for i := 0; i < pool.proxIndice; i++ {
+		c := &pool.chamados[i]
+		if c.Ativo && c.Prazo < turno {
+			tabelaIDs.RemoverIndice(pool, i)
+			grade.Remover(pool, i)
+			pool.Free(i)
+		}
+	}
 }
 
 func jogarTurno(turno int, ambulancias []Ambulancia) {
-    type Par struct {
-        ambIndice     int
-        chamadoIndice int
-        prioridade    float64
-        distancia     int
-    }
+	type Par struct {
+		ambIndice     int
+		chamadoIndice int
+		prioridade    float64
+		distancia     int
+	}
 
-    // Controla usando slices, sem o mapa q o professo proibiu
-    movimentos := make([]string, len(ambulancias))
-    usadosAmbulancias := make([]bool, len(ambulancias))
-    usadosChamados := make([]bool, pool.proxIndice)
+	// Controla usando slices, sem o mapa q o professo proibiu
+	movimentos := make([]string, len(ambulancias))
+	usadosAmbulancias := make([]bool, len(ambulancias))
+	usadosChamados := make([]bool, pool.proxIndice)
 
-    pares := make([]Par, 0)
+	pares := make([]Par, 0)
+	candidatos := make([]int, 0, 100)
 
-    // Gera as combinações entre ambulâncias livres e chamados ativos.
-    for ai, a := range ambulancias {
-        if !a.Livre {
-            continue
-        }
+	// Gera as combinações entre ambulâncias livres e chamados ativos.
+	for ai, a := range ambulancias {
+		if !a.Livre {
+			continue
+		}
 
-        for ci := 0; ci < pool.proxIndice; ci++ {
-            c := &pool.chamados[ci]
+		candidatos = grade.Proximos(pool, a.X, a.Y, 8, candidatos[:0])
 
-            if !c.Ativo || c.Prazo < turno {
-                continue
-            }
+		for _, ci := range candidatos {
+			c := &pool.chamados[ci]
 
-            dist := distancia(a.X, a.Y, c.X, c.Y)
+			dist := distancia(a.X, a.Y, c.X, c.Y)
+			if !c.Ativo || c.Prazo < turno+dist {
+				continue
+			}
 
-            prioridade := float64(c.Valor) / float64(dist+1)
+			prioridade := float64(c.Valor) / float64(dist+1)
 
-            pares = append(pares, Par{
-                ambIndice:     ai,
-                chamadoIndice: ci,
-                prioridade:    prioridade,
-                distancia:     dist,
-            })
-        }
-    }
+			pares = append(pares, Par{
+				ambIndice:     ai,
+				chamadoIndice: ci,
+				prioridade:    prioridade,
+				distancia:     dist,
+			})
+		}
+	}
 
-    // Ordena pela maior prioridade.
-    // Em caso de empate, prefere o chamado mais próximo.
-    sort.Slice(pares, func(i, j int) bool {
-        if pares[i].prioridade == pares[j].prioridade {
-            return pares[i].distancia < pares[j].distancia
-        }
+	// Ordena pela maior prioridade.
+	// Em caso de empate, prefere o chamado mais próximo.
+	sort.Slice(pares, func(i, j int) bool {
+		if pares[i].prioridade == pares[j].prioridade {
+			return pares[i].distancia < pares[j].distancia
+		}
 
-        return pares[i].prioridade > pares[j].prioridade
-    })
+		return pares[i].prioridade > pares[j].prioridade
+	})
 	//questão que estava faltando, a saber quais ambulâncias estão ocupadas e tals.
-    // Distribui os chamados sem repetir ambulâncias ou chamados.
-    for _, p := range pares {
-        if usadosAmbulancias[p.ambIndice] ||
-            usadosChamados[p.chamadoIndice] {
-            continue
-        }
+	// Distribui os chamados sem repetir ambulâncias ou chamados.
+	for _, p := range pares {
+		if usadosAmbulancias[p.ambIndice] ||
+			usadosChamados[p.chamadoIndice] {
+			continue
+		}
 
-        a := ambulancias[p.ambIndice]
-        c := pool.chamados[p.chamadoIndice]
+		a := ambulancias[p.ambIndice]
+		c := pool.chamados[p.chamadoIndice]
 
-        movimentos[p.ambIndice] = direcao(
-            a.X, a.Y,
-            c.X, c.Y,
-        )
+		movimentos[p.ambIndice] = direcao(
+			a.X, a.Y,
+			c.X, c.Y,
+		)
 
-        usadosAmbulancias[p.ambIndice] = true
-        usadosChamados[p.chamadoIndice] = true
-    }
+		usadosAmbulancias[p.ambIndice] = true
+		usadosChamados[p.chamadoIndice] = true
+	}
 
-    // Ambulâncias ocupadas vão para o hospital mais próximo.
-    for ai, a := range ambulancias {
-        if !a.Livre {
-            if len(hospitais) == 0 {
-                movimentos[ai] = "P"
-                continue
-            }
+	// Ambulâncias ocupadas vão para o hospital mais próximo.
+	for ai, a := range ambulancias {
+		if !a.Livre {
+			if len(hospitais) == 0 {
+				movimentos[ai] = "P"
+				continue
+			}
 
-            melhor := 0
+			melhor := 0
 
-            for i, h := range hospitais {
-                if distancia(a.X, a.Y, h.X, h.Y) <
-                    distancia(a.X, a.Y, hospitais[melhor].X, hospitais[melhor].Y) {
-                    melhor = i
-                }
-            }
+			for i, h := range hospitais {
+				if distancia(a.X, a.Y, h.X, h.Y) <
+					distancia(a.X, a.Y, hospitais[melhor].X, hospitais[melhor].Y) {
+					melhor = i
+				}
+			}
 
-            h := hospitais[melhor]
+			h := hospitais[melhor]
 
-            movimentos[ai] = direcao(
-                a.X, a.Y,
-                h.X, h.Y,
-            )
-        }
+			movimentos[ai] = direcao(
+				a.X, a.Y,
+				h.X, h.Y,
+			)
+		}
 
-        // Se não encontrou chamado para uma ambulância livre, ela espera.
-        if movimentos[ai] == "" {
-            movimentos[ai] = "P"
-        }
-    }
+		// Se não encontrou chamado para uma ambulância livre, ela espera.
+		if movimentos[ai] == "" {
+			movimentos[ai] = "P"
+		}
+	}
 
-    // Envia os movimentos na ordem original das ambulâncias.
-    for ai, a := range ambulancias {
-        fmt.Fprintln(escritor, a.ID, movimentos[ai])
-    }
+	// Envia os movimentos na ordem original das ambulâncias.
+	for ai, a := range ambulancias {
+		fmt.Fprintln(escritor, a.ID, movimentos[ai])
+	}
 
-    fmt.Fprintln(escritor, "FIM")
-    escritor.Flush()
+	fmt.Fprintln(escritor, "FIM")
+	escritor.Flush()
 }
 
 func main() {
@@ -374,6 +473,7 @@ func main() {
 
 	lerInicio()
 	pool = NovoPool(maxChamados)
+	grade = NovaGrade(largura, altura)
 	tabelaIDs = NovaTabelaIDs(maxChamados)
 	fmt.Fprintln(escritor, "PRONTO")
 	escritor.Flush()
@@ -394,17 +494,18 @@ func main() {
 				continue // pool cheio
 			}
 			pool.chamados[indice] = Chamado{
-    ID:       inteiro(c[0]),
-    X:        inteiro(c[1]),
-    Y:        inteiro(c[2]),
-    Valor:    inteiro(c[3]),
-    Prazo:    inteiro(c[4]),
-    Ativo:    true,
-    HashProx: -1,
-    HashAnt:  -1,
-}
+				ID:       inteiro(c[0]),
+				X:        inteiro(c[1]),
+				Y:        inteiro(c[2]),
+				Valor:    inteiro(c[3]),
+				Prazo:    inteiro(c[4]),
+				Ativo:    true,
+				HashProx: -1,
+				HashAnt:  -1,
+			}
 
-tabelaIDs.Inserir(pool, indice)
+			grade.Inserir(pool, indice)
+			tabelaIDs.Inserir(pool, indice)
 		}
 
 		r := inteiro(lerCampos()[1]) // RECOLHIDOS r
