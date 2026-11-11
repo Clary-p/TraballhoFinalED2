@@ -62,7 +62,7 @@ Depois de encontrar o chamado, conseguimos removê-lo da tabela utilizando seus 
 - Remover o chamado do encadeamento, conhecendo seu índice: O(1).
 - Liberar a posição no pool: O(1).
 
-**Alternativas descartadas:** Alternativa descartada: Percorrer sequencialmente todos os chamados procurando o identificador. Essa alternativa teria custo O(P) por busca. Também descartamos deslocar os elementos do slice após uma remoção, porque isso mudaria os índices utilizados pelas outras estruturas e exigiria atualizar suas referências. Por isso, optamos por manter posições fixas e reutilizar os espaços liberados.Além também de descartar lápides por causa do alto número de chamados em fases mais avançadas.
+**Alternativas descartadas:** Percorrer sequencialmente todos os chamados procurando o identificador. Essa alternativa teria custo O(P) por busca. Também descartamos deslocar os elementos do slice após uma remoção, porque isso mudaria os índices utilizados pelas outras estruturas e exigiria atualizar suas referências. Por isso, optamos por manter posições fixas e reutilizar os espaços liberados.Além também de descartar lápides por causa do alto número de chamados em fases mais avançadas.
 
 ## Evitar que duas ambulâncias da equipe sigam para o mesmo chamado
 
