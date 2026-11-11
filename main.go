@@ -9,8 +9,6 @@ import (
 	"strings"
 )
 
-const maxChamados = 1000000
-
 type Chamado struct {
 	ID    int64
 	X, Y  int16
@@ -18,13 +16,16 @@ type Chamado struct {
 	Prazo int16
 	Ativo bool
 
-	HashProx int32
-	HashAnt  int32
-
 	Cel       int32
 	GradeProx int32
 	GradeAnt  int32
 	Reservado int
+
+	ExpProx int
+	ExpAnt  int
+
+	HashProx int32
+	HashAnt  int32
 }
 
 type Ambulancia struct {
@@ -36,6 +37,24 @@ type Ambulancia struct {
 type Hospital struct {
 	X, Y int16
 }
+
+const maxChamados = 1000000
+const janelaPrazo = 2000
+const tamCelula = 16
+const valorMax = 100
+
+var (
+	leitor   *bufio.Scanner
+	escritor *bufio.Writer
+
+	hospitais []Hospital
+	pool      *PoolChamados
+	grade     *GradeEspacial
+	tabelaIDs *TabelaIDs
+
+	largura, altura int
+	expCabecas      []int
+)
 
 // --- ARMAZENAMENTO DE CHAMADOS ---
 
@@ -81,9 +100,6 @@ func (p *PoolChamados) Free(indice int) {
 }
 
 // --- GRADE ESPACIAL ---
-
-const tamCelula = 16 // lado de cada célula da grade, em células do mapa
-const valorMax = 100
 
 type GradeEspacial struct {
 	cols, linhas int
@@ -172,7 +188,32 @@ func (g *GradeEspacial) Proximos(p *PoolChamados, x, y, k int, out []int) []int 
 	return out
 }
 
-// -- Tabela Hash de IDs ---
+// --- LISTA DE EXPIRAÇÃO ---
+
+func expInserir(p *PoolChamados, indice int) {
+	c := &p.chamados[indice]
+	b := c.Prazo % janelaPrazo
+	c.ExpAnt = -1
+	c.ExpProx = expCabecas[b]
+	if c.ExpProx != -1 {
+		p.chamados[c.ExpProx].ExpAnt = indice
+	}
+	expCabecas[b] = indice
+}
+
+func expRemover(p *PoolChamados, indice int) {
+	c := &p.chamados[indice]
+	if c.ExpAnt == -1 {
+		expCabecas[c.Prazo%janelaPrazo] = c.ExpProx
+	} else {
+		p.chamados[c.ExpAnt].ExpProx = c.ExpProx
+	}
+	if c.ExpProx != -1 {
+		p.chamados[c.ExpProx].ExpAnt = c.ExpAnt
+	}
+}
+
+// -- TABELA HASH DE IDS ---
 
 // ids com tabela hash, +fácil de localizar
 type TabelaIDs struct {
@@ -251,16 +292,6 @@ func (t *TabelaIDs) RemoverIndice(p *PoolChamados, indice int) {
 	c.HashProx = -1
 }
 
-var (
-	leitor   *bufio.Scanner
-	escritor *bufio.Writer
-
-	hospitais []Hospital
-	pool      *PoolChamados
-	grade     *GradeEspacial
-	tabelaIDs *TabelaIDs
-)
-
 // lerCampos lê a próxima linha da entrada e a divide em campos.
 // Devolve nil quando a entrada termina.
 func lerCampos() []string {
@@ -305,8 +336,6 @@ func direcao(x, y, alvoX, alvoY int) string {
 	return "P"
 }
 
-var largura, altura int
-
 // lerInicio lê a mensagem de início. Este bot só usa os hospitais; os
 // bloqueios são lidos e descartados.
 func lerInicio() {
@@ -329,28 +358,32 @@ func lerInicio() {
 	lerCampos() // FIM
 }
 
-// removerPorID procura o chamado no slice e o remove
-func removerPorID(id int64) {
-	indice, encontrado := tabelaIDs.Buscar(pool, id)
-
-	if !encontrado {
-		return
-	}
-
+func removerIndice(indice int) {
 	tabelaIDs.RemoverIndice(pool, indice)
 	grade.Remover(pool, indice)
+	expRemover(pool, indice)
 	pool.Free(indice)
 }
 
-// removerExpirados mantém só os chamados com prazo maior ou igual ao turno.
+func removerPorID(id int64) {
+	indice, ok := tabelaIDs.Buscar(pool, id)
+	if !ok {
+		return
+	}
+	removerIndice(indice)
+}
+
 func removerExpirados(turno int) {
-	for i := 0; i < pool.proxIndice; i++ {
-		c := &pool.chamados[i]
-		if c.Ativo && int(c.Prazo) < turno {
-			tabelaIDs.RemoverIndice(pool, i)
-			grade.Remover(pool, i)
-			pool.Free(i)
+	if turno < 1 {
+		return
+	}
+	b := (turno - 1) % janelaPrazo
+	for i := expCabecas[b]; i != -1; {
+		prox := pool.chamados[i].ExpProx
+		if int(pool.chamados[i].Prazo) < turno {
+			removerIndice(i)
 		}
+		i = prox
 	}
 }
 
@@ -474,7 +507,12 @@ func main() {
 	lerInicio()
 	pool = NovoPool(maxChamados)
 	grade = NovaGrade(largura, altura)
+	expCabecas = make([]int, janelaPrazo)
+	for i := range expCabecas {
+		expCabecas[i] = -1
+	}
 	tabelaIDs = NovaTabelaIDs(maxChamados)
+
 	fmt.Fprintln(escritor, "PRONTO")
 	escritor.Flush()
 
@@ -505,6 +543,7 @@ func main() {
 			}
 
 			grade.Inserir(pool, indice)
+			expInserir(pool, indice)
 			tabelaIDs.Inserir(pool, indice)
 		}
 
